@@ -23,12 +23,12 @@ class Peer:
         self.server_thread.start()
         signal.signal(signal.SIGINT, self.signal_handler)
     def signal_handler(self, sig, frame):
-        print("Exiting...")
+        self.write_logs("socket", "Exiting...")
         tracker_ip, tracker_port = self.find_tracker()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((tracker_ip, tracker_port))
             s.sendall(f'unregister:{self.id}'.encode('utf-8'))
-            print(s.recv(1024).decode('utf-8'))
+            self.write_logs('socket', s.recv(1024).decode('utf-8') )
         self.socket.close()
         os._exit(0)
 
@@ -36,7 +36,7 @@ class Peer:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((tracker_ip, tracker_port))
             s.sendall(f'register:{self.ip}:{self.port}:{self.id}'.encode('utf-8'))
-            print(s.recv(1024).decode('utf-8'))
+            self.write_logs('socket',s.recv(1024).decode('utf-8'))
 
     def start_socket(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -52,7 +52,7 @@ class Peer:
     def handle_client(self, conn: socket.socket, addr: tuple[str, int]):
         try:
             data = conn.recv(1024).decode('utf-8')
-            print("Received:", data)
+            self.write_logs("socket", "Received:", data)
             messages = self.parse_message(data)
             for message in messages:
                 if message.startswith('tracker:'):
@@ -66,7 +66,7 @@ class Peer:
                     pass
                 else:
                     conn.sendall(b'Invalid request')
-                    print('Invalid request', message)
+                    self.write_logs("socket", 'Invalid request', message)
         except Exception as e:
             print(e)
         finally:
@@ -128,31 +128,40 @@ class Peer:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((tracker_ip, tracker_port))
             s.sendall(f'upload:{metainfo.info_hash.hex()}:{metainfo.piece_count}:{self.id}\n'.encode('utf-8'))
-            print(s.recv(1024).decode('utf-8'))
+            self.write_logs("socket",s.recv(1024).decode('utf-8'))
 
     def download(self, torrent: str):
         metainfo = Metainfo.Metainfo(torrent)
         # Get peer from tracker
         tracker_ip, tracker_port = metainfo.tracker_url.split(':')
         tracker_port = int(tracker_port)
-        Tries = 5
-        while Tries > 0:
-            progress = self.progress[metainfo.info_hash.hex()]
-            if progress.finished():
-                print("Download complete")
-                self.merge_files(metainfo)
-                break
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.connect((tracker_ip, tracker_port))
-                    s.sendall(f'get:{metainfo.info_hash.hex()}\n'.encode('utf-8'))
-                    data = self.receive_all(s).decode('utf-8')
-                    peers: list[tuple[str, str, str, bytes]] = eval(data)
-                    peers = [(peer_id, ip, port, Bitfield.from_bytes(bitfield_bytes)) for peer_id, ip, port, bitfield_bytes in peers]
-                    for piece in range(metainfo.piece_count):
-                        if not progress.has_piece(piece):
-                            ip, port = self.find_peer(peers, piece)
-                            threading.Thread(target=self.download_piece, args=((tracker_ip, tracker_port), metainfo.info_hash.hex(), metainfo.piece_count, piece, (ip, int(port)))).start()
-            Tries -= 1
+       
+        progress = self.progress[metainfo.info_hash.hex()]
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((tracker_ip, tracker_port))
+            s.sendall(f'get:{metainfo.info_hash.hex()}\n'.encode('utf-8'))
+            data = self.receive_all(s).decode('utf-8')
+            peers: list[tuple[str, str, str, bytes]] = eval(data)
+            peers = [(peer_id, ip, port, Bitfield.from_bytes(bitfield_bytes)) for peer_id, ip, port, bitfield_bytes in peers]
+            download_threads = []
+            for piece in range(metainfo.piece_count):
+                if not progress.has_piece(piece):
+                    id, ip, port = self.find_peer(peers, piece)
+                    self.write_logs("download", f"Downloading piece {piece} from {id} with ip {ip} and port {port}")
+                    thread = threading.Thread(target=self.download_piece, args=((tracker_ip, tracker_port), metainfo.info_hash.hex(), metainfo.piece_count, piece, (ip, int(port))))
+                    thread.start()
+                    download_threads.append(thread)
+                    
+        for thread in download_threads:
+            thread.join()   
+        if progress.finished():
+            self.write_logs("download", f"Download {metainfo.info_hash.hex()} complete")
+            self.merge_files(metainfo)
+            return
+        else:
+            self.write_logs("download", f"Download {metainfo.info_hash.hex()} unsuccessful")
+            print(f"Download {metainfo.name}.torrent unsuccessful try again")
+
     def receive_all(self, sock: socket.socket) -> bytes:
         data = b''
         while True:
@@ -183,7 +192,7 @@ class Peer:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect(tracker)
             s.sendall(f'downloaded:{info_hash}:{piece}:{self.id}:{piece_count}\n'.encode('utf-8'))
-            print(s.recv(1024).decode('utf-8'))
+            self.write_logs("socket", s.recv(1024).decode('utf-8'))
             
     def merge_files(self, metainfo: Metainfo.Metainfo):
         destination = f'./download/{metainfo.info_hash.hex()}'
@@ -203,16 +212,26 @@ class Peer:
                         read_length += len(data)
                     if read_length >= file.length:
                         break
+        print(f"Downloaded {metainfo.name}.torrent to {destination}")
 
     def find_peer(self, peers: list[tuple[str, str, str, Bitfield]], piece_index):
         while True:
             index = random.randint(0, len(peers)-1)
             peer = peers[index]
             if peer[0] != self.id and peer[3].has_piece(piece_index):
-                return peer[1], peer[2]
+                return peer[0], peer[1], peer[2]
             
     def parse_message(self, data: str):
         return data.split('\n')
+    
+    def write_logs(self, type: str, *data: str):
+        path = f'./logs'
+        os.makedirs(path, exist_ok=True)
+        with open(f'{path}/{type}.log', 'a') as f:
+            for item in data:
+                f.write(item+' ')
+            f.write('\n')
+
             
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Peer-to-Peer File Sharing")

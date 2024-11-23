@@ -24,7 +24,7 @@ class Tracker:
     def handle_client(self, conn: socket.socket, addr: tuple[str, int]):
         try:
             data = conn.recv(1024).decode('utf-8')
-            print("Received:", data)
+            self.write_log("Received:", data)
             messages = self.parse_message(data)
             print("Messages:", messages)
             for message in messages:
@@ -32,7 +32,7 @@ class Tracker:
                     _, ip, port, id = message.split(':')
                     with self.peer_lock:
                         self.peers[id] = (ip, port)
-                    print(f'Registered {id} with {ip}:{port}')
+                    self.write_log(f'Registered {id} with {ip}:{port}')
                     conn.sendall(b'Registered')
 
                 elif message.startswith('upload:'):
@@ -44,13 +44,13 @@ class Tracker:
                         ip, port = self.peers[id]
                     
                     self.distribute_torrent(info_hash, piece_count, (id, ip, port))
-                    print(f'Uploaded {info_hash} with {piece_count} pieces')
-                    conn.sendall(b'Upload success')
+                    self.write_log(f'Uploaded {info_hash} with {piece_count} pieces')
+                    conn.sendall(f'Upload {info_hash} success'.encode('utf-8'))
 
                 elif message.startswith('get:'):
                     _, info_hash = message.split(':')
                     result = self.getPeerInfo(info_hash)
-                    print(f'Getting {info_hash} info')
+                    self.write_log(f'Getting {info_hash} info', str(result))
                     conn.sendall((str(result)+"\n").encode('utf-8'))
 
                 elif message.startswith('downloaded:'):
@@ -69,7 +69,7 @@ class Tracker:
                             array = Bitfield(piece_count)
                             array.set_piece(piece_index)
                             progress.append((id, array))
-                    conn.sendall(b'Progress updated')
+                    conn.sendall(f'Progress of {info_hash} piece {piece_index} updated'.encode('utf-8'))
                 elif message.startswith('unregister:'):
                     _, id = message.split(':')
                     with self.peer_lock:
@@ -79,14 +79,14 @@ class Tracker:
                     pass
                 else:
                     conn.sendall(b'Invalid request')
-                    print('Invalid request', message)
+                    self.write_log('Invalid request', message)
         except Exception as e:
             raise e
         finally:
             conn.close()
     def distribute_torrent(self, info_hash: str, piece_count: int, owner: tuple[str, str, int]):
         peers = self.select_random_peers()
-        print(f'Distributing {info_hash} to {peers}')
+        self.write_log(f'Distributing {info_hash} to {peers}')
         for peer in peers:
             peer_id, peer_ip, peer_port = peer
             if peer_id == owner[0]:
@@ -117,11 +117,16 @@ class Tracker:
 
     def send_data(self, destination: tuple[str, int], data: str):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            print(f'Connecting to {destination}')
+            self.write_log(f'Connecting to {destination}')
             s.connect(destination)
             data += '\n'
             s.sendall(data.encode('utf-8'))
-            print("Response", s.recv(1024).decode('utf-8'))
+            self.write_log("Response", s.recv(1024).decode('utf-8'))
+    def write_log(self, *data: str):
+        with open('tracker.log', 'a') as f:
+            for d in data:
+                f.write(d+'')
+            f.write('\n')
 
 if __name__ == '__main__':
     tracker = Tracker("localhost", 5000)
