@@ -8,13 +8,14 @@ import Metainfo
 import argparse
 import random
 import signal
+from Bitfield import Bitfield
 class Peer:
     def __init__(self, ip: str, port: str):
         self.ip = ip
         self.port = port
         self.server_thread = threading.Thread(target=self.start_socket, daemon=True)
         self.id = uuid.uuid4()
-        self.progress: dict[str, list[int]] = {}
+        self.progress: dict[str, Bitfield] = {}
         self.running = True
         self.progress_lock = threading.Lock()
         tracker_ip, tracker_port = self.find_tracker()
@@ -121,7 +122,7 @@ class Peer:
         starting_piece = 0
         for file in files:
             starting_piece = self.split_file(file, starting_piece, f'./files/{metainfo.info_hash.hex()}')
-        self.progress[metainfo.info_hash.hex()] = [1] * metainfo.piece_count
+        self.progress[metainfo.info_hash.hex()] = Bitfield(metainfo.piece_count, True)
 
         # Send metainfo to tracker
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -137,7 +138,7 @@ class Peer:
         Tries = 5
         while Tries > 0:
             progress = self.progress[metainfo.info_hash.hex()]
-            if all(status == 1 for status in progress):
+            if progress.finished():
                 print("Download complete")
                 self.merge_files(metainfo)
                 break
@@ -145,9 +146,10 @@ class Peer:
                     s.connect((tracker_ip, tracker_port))
                     s.sendall(f'get:{metainfo.info_hash.hex()}\n'.encode('utf-8'))
                     data = self.receive_all(s).decode('utf-8')
-                    peers: tuple[str, str, str, list[int]] = eval(data)
-                    for piece, status in enumerate(progress):
-                        if status == 0:
+                    peers: list[tuple[str, str, str, bytes]] = eval(data)
+                    peers = [(peer_id, ip, port, Bitfield.from_bytes(bitfield_bytes)) for peer_id, ip, port, bitfield_bytes in peers]
+                    for piece in range(metainfo.piece_count):
+                        if not progress.has_piece(piece):
                             ip, port = self.find_peer(peers, piece)
                             threading.Thread(target=self.download_piece, args=((tracker_ip, tracker_port), metainfo.info_hash.hex(), metainfo.piece_count, piece, (ip, int(port)))).start()
             Tries -= 1
@@ -175,8 +177,8 @@ class Peer:
                     f.write(data)
             with self.progress_lock:
                 if info_hash not in self.progress:
-                    self.progress[info_hash] = [0] * piece_count
-                self.progress[info_hash][int(piece)] = 1
+                    self.progress[info_hash] = Bitfield(piece_count)
+                self.progress[info_hash].set_piece(piece)
             
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect(tracker)
@@ -202,11 +204,11 @@ class Peer:
                     if read_length >= file.length:
                         break
 
-    def find_peer(self, peers, piece_index):
+    def find_peer(self, peers: list[tuple[str, str, str, Bitfield]], piece_index):
         while True:
             index = random.randint(0, len(peers)-1)
             peer = peers[index]
-            if peer[0] != self.id and peer[3][piece_index] == 1:
+            if peer[0] != self.id and peer[3].has_piece(piece_index):
                 return peer[1], peer[2]
             
     def parse_message(self, data: str):

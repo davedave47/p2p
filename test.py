@@ -12,6 +12,7 @@ def generate_peers(amount: int):
         os.system(f'cp ./Peer.py {folder}')
         os.system(f'cp ./Metainfo.py {folder}')
         os.system(f'cp ./constants.py {folder}')
+        os.system(f'cp ./Bitfield.py {folder}')
 
 generate_peers(3)
 os.system('cp -r ./test ./Peer1')

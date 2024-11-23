@@ -4,10 +4,11 @@
 import socket
 import threading
 import random
+from Bitfield import Bitfield
 
 class Tracker:
     def __init__(self, ip, port):
-        self.progress: dict[str, list[tuple[str, list[int]]]] = {}
+        self.progress: dict[str, list[tuple[str, Bitfield]]] = {}
         self.peers: dict[str, tuple[str, str]] = {}
         self.progress_lock = threading.Lock()
         self.peer_lock = threading.Lock()
@@ -38,7 +39,7 @@ class Tracker:
                     _, info_hash, piece_count, id = message.split(':')
                     piece_count = int(piece_count)
                     with self.progress_lock:
-                        self.progress[info_hash] = [(id, [1]*piece_count)]
+                        self.progress[info_hash] = [(id, Bitfield(piece_count, True))]
                     with self.peer_lock:
                         ip, port = self.peers[id]
                     
@@ -62,11 +63,11 @@ class Tracker:
                         for (peer_id, peer_progress) in progress:
                             if peer_id == id:
                                 found = True
-                                peer_progress[piece_index] = 1
+                                peer_progress.set_piece(piece_index)
                                 break
                         if not found:
-                            array = [0]*piece_count
-                            array[piece_index] = 1
+                            array = Bitfield(piece_count)
+                            array.set_piece(piece_index)
                             progress.append((id, array))
                     conn.sendall(b'Progress updated')
                 elif message.startswith('unregister:'):
@@ -108,7 +109,7 @@ class Tracker:
             id, progress = peer
             with self.peer_lock:
                 ip, port = self.peers[id]
-            result.append((id, ip, port, progress))
+            result.append((id, ip, port, progress.to_bytes()))
         return result
     
     def parse_message(self, data: str):
