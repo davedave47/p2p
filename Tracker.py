@@ -4,6 +4,7 @@
 import socket
 import threading
 import random
+from constants import TRACKER_IP, TRACKER_PORT
 from Bitfield import Bitfield
 
 class Tracker:
@@ -129,7 +130,7 @@ class Tracker:
             f.write('\n')
 
 if __name__ == '__main__':
-    tracker = Tracker("localhost", 5000)
+    tracker = Tracker(TRACKER_IP, TRACKER_PORT)
 
     print('Tracker started')
     tracker.start_socket()

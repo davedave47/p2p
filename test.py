@@ -15,7 +15,16 @@ def generate_peers(amount: int):
         os.system(f'cp ./Bitfield.py {folder}')
 
 generate_peers(3)
-os.system('cp -r ./test ./Peer1')
+
+os.makedirs('./Peer1/test')
+os.system('cp ./test/Chapter_1_v8.0.pdf ./Peer1/test/')
+os.system('cp ./test/Chapter_2_v8.0.pdf ./Peer1/test/')
+
+os.makedirs('./Peer2/test')
+os.system('cp ./test/Chapter_3_v8.0.pdf ./Peer2/test/')
+os.system('cp ./test/Chapter_4_v8.0.pdf ./Peer2/test/')
+
 
 # download ./test.torrent
-# upload test ./test/Chapter_1_v8.0.pdf ./test/Chapter_2_v8.0.pdf ./test/Chapter_3_v8.0.pdf ./test/Chapter_4_v8.0.pdf
+# upload test ./test/Chapter_1_v8.0.pdf ./test/Chapter_2_v8.0.pdf
+# upload test2 ./test/Chapter_3_v8.0.pdf ./test/Chapter_4_v8.0.pdf
