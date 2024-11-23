@@ -147,11 +147,10 @@ class Peer:
             for piece in range(metainfo.piece_count):
                 if not progress.has_piece(piece):
                     id, ip, port = self.find_peer(peers, piece)
-                    self.write_logs("download", f"Downloading piece {piece} from {id} with ip {ip} and port {port}")
                     thread = threading.Thread(target=self.download_piece, args=((tracker_ip, tracker_port), metainfo.info_hash.hex(), metainfo.piece_count, piece, (ip, int(port))))
                     thread.start()
                     download_threads.append(thread)
-                    
+
         for thread in download_threads:
             thread.join()   
         if progress.finished():
@@ -178,6 +177,7 @@ class Peer:
             s.sendall(f'peer:{info_hash}:{piece}\n'.encode('utf-8'))
             location = f'./files/{info_hash}'
             os.makedirs(location, exist_ok=True)
+            self.write_logs("download", f"Downloading piece {piece} of {info_hash} from ip {peer[0]} and port {peer[1]}")
             with open(f'{location}/{piece}', 'wb') as f:
                 while True:
                     data = s.recv(PIECE_SIZE)
