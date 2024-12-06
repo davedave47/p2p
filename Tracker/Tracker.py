@@ -1,4 +1,3 @@
-import json
 import socket
 import threading
 import random
@@ -54,8 +53,6 @@ class Tracker:
                         if existing_id:
                             del self.peers[existing_id]
                         self.peers[id] = (ip, port)
-                        with open('peers.json', 'w') as f:
-                            json.dump(self.peers, f)
                     
                     self.write_log(f'Registered {id} with {ip}:{port}')
                     conn.sendall(b'Registered')
@@ -99,8 +96,6 @@ class Tracker:
                     _, id = message.split(':')
                     with self.peer_lock:
                         self.peers.pop(id)
-                        with open('peers.json', 'w') as f:
-                            json.dump(self.peers, f)
                     self.write_log(f'Unregistered {id}')       
                     conn.sendall(b'Unregistered')
                 elif message == '':

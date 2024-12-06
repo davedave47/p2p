@@ -72,8 +72,13 @@ class Peer:
                     threading.Thread(target=self.download_from_peer, args=((peer_ip, int(peer_port)), [int(piece_index)], (tracker_ip, tracker_port), info_hash, int(piece_count))).start()
                 elif message.startswith('peer:'):
                     _, info_hash, piece_index = message.split(':')
-                    conn.sendall(self.get_piece(info_hash, piece_index))
-                    self.write_logs("socket", f"Sent piece {piece_index} of {info_hash} to {addr}")
+                    data = self.get_piece(info_hash, piece_index)
+                    if data:
+                        conn.sendall(data)
+                        self.write_logs("socket", f"Sent piece {piece_index} of {info_hash} to {addr}")
+                    else:
+                        conn.sendall("Failed to get piece".encode('utf-8'))
+                        
                 elif message == "":
                     pass
                 else:
@@ -101,8 +106,31 @@ class Peer:
         return starting_piece
     def get_piece(self, info_hash: str, piece_index: str) -> bytes:
         piece_path = f'/data/files/{info_hash}/{piece_index}'
-        with open(piece_path, 'rb') as f:
-            return f.read()
+        try:
+            with open(piece_path, 'rb') as f:
+                return f.read()
+        except FileNotFoundError:
+            tracker_ip, tracker_port = self.find_tracker()
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((tracker_ip, tracker_port))
+                s.sendall(f'get:{info_hash}\n'.encode('utf-8'))
+                data = self.receive_all(s).decode('utf-8')
+                peers: list[tuple[str, str, str, bytes]] = eval(data)
+                peers = [(peer_id, ip, port, Bitfield.from_bytes(bitfield_bytes)) for peer_id, ip, port, bitfield_bytes in peers]
+                try:
+                    ip, port = self.find_peer(peers, int(piece_index))
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.connect((ip, int(port)))
+                        s.sendall(f'peer:{info_hash}:{piece_index}\n'.encode('utf-8'))
+                        piece = s.recv(PIECE_SIZE)
+                        with open(piece_path, 'wb') as f:
+                            f.write(piece)
+                        return piece
+                except Exception as e:
+                    self.write_logs("socket", f"Failed to find peer for piece {piece_index} of {info_hash}")
+                    return b''
+
+                
     def find_tracker(self) -> tuple[str, int]:
         parsed_url = urlparse(os.getenv("TRACKER_URL"))
         ip = parsed_url.hostname
@@ -166,7 +194,8 @@ class Peer:
             peers: list[tuple[str, str, str, bytes]] = eval(data)
             peers = [(peer_id, ip, port, Bitfield.from_bytes(bitfield_bytes)) for peer_id, ip, port, bitfield_bytes in peers]
 
-        pieces_selection = self.select_pieces(peers, metainfo.piece_count)
+        pieces_selection = self.select_pieces(peers, metainfo.piece_count, metainfo.info_hash.hex())
+        
         self.write_logs("download", f"Selected pieces: {str(pieces_selection)}")
         download_threads: list[threading.Thread] = []    
         for ip, port, pieces in pieces_selection:
@@ -222,12 +251,15 @@ class Peer:
                         break
         print(f"Downloaded {metainfo.name}.torrent to {destination}")
         
-    def select_pieces(self, peers: list[tuple[str, str, str, Bitfield]], piece_count: int) -> list[tuple[str, str, list[int]]]:
+    def select_pieces(self, peers: list[tuple[str, str, str, Bitfield]], piece_count: int, info_hash: str) -> list[tuple[str, str, list[int]]]:
         # Sort peers by their Bitfield.get_progress() in ascending order
         sorted_peers = sorted(peers, key=lambda x: x[3].get_progress())
         
         pieces_selection: list[tuple[str, str, list[int]]] = []
         for piece in range(piece_count):
+            with self.progress_lock:
+                if self.progress[info_hash].has_piece(piece):
+                    continue
             for peer in sorted_peers:
                 id, ip, port, bitfield = peer
                 if id != str(self.id) and bitfield.has_piece(piece):
