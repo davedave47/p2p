@@ -12,6 +12,8 @@ class Bitfield:
         return self.bitarray[index]
     def to_bytes(self):
         return self.bitarray.tobytes()
+    def remove_piece(self, index):
+        self.bitarray[index] = False
 
     @staticmethod
     def from_bytes(data):
@@ -25,7 +27,7 @@ class Bitfield:
     def finished(self):
         return all(self.bitarray)
     def __str__(self):
-        return str(self.bitarray)
+        return self.bitarray.to01()
     
 if __name__ == "__main__":
     test = Bitfield(10)

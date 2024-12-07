@@ -12,8 +12,13 @@ from Bitfield import Bitfield
 from urllib.parse import urlparse
 from tabulate import tabulate
 from time import sleep
+from datetime import datetime
 class Peer:
     def __init__(self, ip: str, port: str):
+        parsed_url = urlparse(os.getenv("TRACKER_URL"))
+        self.tracker_ip = parsed_url.hostname
+        self.tracker_port = parsed_url.port
+        
         self.ip = ip
         self.port = port
         self.server_thread = threading.Thread(target=self.start_socket, daemon=True)
@@ -28,12 +33,12 @@ class Peer:
         
     def signal_handler(self, sig, frame):
         self.write_logs("socket", "Exiting...")
+        self.socket.close()
         tracker_ip, tracker_port = self.find_tracker()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((tracker_ip, tracker_port))
             s.sendall(f'unregister:{self.id}'.encode('utf-8'))
             self.write_logs('socket', s.recv(1024).decode('utf-8') )
-        self.socket.close()
         sys.exit(0)
 
     def register(self, tracker_ip: str, tracker_port: int):
@@ -77,8 +82,14 @@ class Peer:
                         conn.sendall(data)
                         self.write_logs("socket", f"Sent piece {piece_index} of {info_hash} to {addr}")
                     else:
-                        conn.sendall("Failed to get piece".encode('utf-8'))
-                        
+                        conn.sendall(b"NODATA")
+                elif message.startswith('reboot:'):
+                    _, tracker_port = message.split(':')
+                    with self.progress_lock:
+                        progress = [(info_hash, bitfield.to_bytes()) for info_hash, bitfield in self.progress.items()]
+                        conn.sendall(str(progress).encode('utf-8'))
+                    self.tracker_port = int(tracker_port)
+                    self.tracker_ip = addr[0]
                 elif message == "":
                     pass
                 else:
@@ -110,32 +121,20 @@ class Peer:
             with open(piece_path, 'rb') as f:
                 return f.read()
         except FileNotFoundError:
-            tracker_ip, tracker_port = self.find_tracker()
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((tracker_ip, tracker_port))
-                s.sendall(f'get:{info_hash}\n'.encode('utf-8'))
-                data = self.receive_all(s).decode('utf-8')
-                peers: list[tuple[str, str, str, bytes]] = eval(data)
-                peers = [(peer_id, ip, port, Bitfield.from_bytes(bitfield_bytes)) for peer_id, ip, port, bitfield_bytes in peers]
+            with self.progress_lock:
+                tracker_ip, tracker_port = self.find_tracker()
+                self.progress[info_hash].remove_piece(int(piece_index))
                 try:
-                    ip, port = self.find_peer(peers, int(piece_index))
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        s.connect((ip, int(port)))
-                        s.sendall(f'peer:{info_hash}:{piece_index}\n'.encode('utf-8'))
-                        piece = s.recv(PIECE_SIZE)
-                        with open(piece_path, 'wb') as f:
-                            f.write(piece)
-                        return piece
+                        s.connect((tracker_ip, tracker_port))
+                        s.sendall(f'delete:{self.id}:{info_hash}:{piece_index}\n'.encode('utf-8'))
+                        return None
                 except Exception as e:
-                    self.write_logs("socket", f"Failed to find peer for piece {piece_index} of {info_hash}")
-                    return b''
-
+                    return None
                 
     def find_tracker(self) -> tuple[str, int]:
-        parsed_url = urlparse(os.getenv("TRACKER_URL"))
-        ip = parsed_url.hostname
-        port = parsed_url.port
-        return (ip, port)
+        return (self.tracker_ip, self.tracker_port)
+    
     def listen_for_commands(self):
         while True:
             print("Enter a command:")
@@ -173,26 +172,32 @@ class Peer:
             starting_piece = self.split_file(file, starting_piece, f'/data/files/{metainfo.info_hash.hex()}')
         with self.progress_lock:
             self.progress[metainfo.info_hash.hex()] = Bitfield(metainfo.piece_count, True)
-
-        # Send metainfo to tracker
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((tracker_ip, tracker_port))
-            s.sendall(f'upload:{metainfo.info_hash.hex()}:{metainfo.piece_count}:{self.id}\n'.encode('utf-8'))
-            self.write_logs("socket",s.recv(1024).decode('utf-8'))
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((tracker_ip, tracker_port))
+                s.sendall(f'upload:{metainfo.info_hash.hex()}:{metainfo.piece_count}:{self.id}\n'.encode('utf-8'))
+                self.write_logs("socket",s.recv(1024).decode('utf-8'))
+        except Exception as e:
+            print("Failed to connect to tracker")
+            return
 
     def download(self, torrent: str):
         metainfo = Metainfo.Metainfo(torrent)
-        # Get peer from tracker
-        tracker_ip, tracker_port = metainfo.tracker_url.split(':')
-        tracker_port = int(tracker_port)
+        
+        tracker_ip, tracker_port = self.find_tracker()
+        
         with self.progress_lock:
             progress = self.progress[metainfo.info_hash.hex()]
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((tracker_ip, tracker_port))
-            s.sendall(f'get:{metainfo.info_hash.hex()}\n'.encode('utf-8'))
-            data = self.receive_all(s).decode('utf-8')
-            peers: list[tuple[str, str, str, bytes]] = eval(data)
-            peers = [(peer_id, ip, port, Bitfield.from_bytes(bitfield_bytes)) for peer_id, ip, port, bitfield_bytes in peers]
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((tracker_ip, tracker_port))
+                s.sendall(f'get:{metainfo.info_hash.hex()}\n'.encode('utf-8'))
+                data = self.receive_all(s).decode('utf-8')
+                peers: list[tuple[str, str, str, bytes]] = eval(data)
+                peers = [(peer_id, ip, port, Bitfield.from_bytes(bitfield_bytes)) for peer_id, ip, port, bitfield_bytes in peers]
+        except Exception as e:
+            print("Failed to connect to tracker")
+            return
 
         pieces_selection = self.select_pieces(peers, metainfo.piece_count, metainfo.info_hash.hex())
         
@@ -295,6 +300,9 @@ class Peer:
             with open(f'{location}/{piece}', 'wb') as f:
                 while True:
                     data = s.recv(PIECE_SIZE)
+                    if data == b"NODATA":
+                        self.write_logs("download", f"Peer {peer[0]}:{peer[1]} does not have piece {piece} of {info_hash}")
+                        return
                     if not data:
                         break
                     f.write(data)
@@ -324,6 +332,8 @@ class Peer:
             path = f'/data/logs'
             os.makedirs(path, exist_ok=True)
             with open(f'{path}/{type}.log', 'a') as f:
+                time = datetime.now().strftime("[%d/%m/%Y %H:%M:%S]")
+                f.write(f'{time} ')
                 for item in data:
                     f.write(item+' ')
                 f.write('\n')

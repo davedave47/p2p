@@ -61,8 +61,6 @@ class Metainfo:
             b'pieces': self.piece_count,
             b'files': [{b'length': file.length, b'path': [p.encode('utf-8') for p in file.get_path_arr()]} for file in self.files]
         }
-    def compare_info_hash(self, other: bytes):
-        return self.info_hash == other.info_hash
     def print(self):
         print(f'Tracker URL: {self.tracker_url}')
         print(f'Torrent Name: {self.name}')
